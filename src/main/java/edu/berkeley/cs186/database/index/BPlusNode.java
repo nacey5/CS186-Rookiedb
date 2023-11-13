@@ -99,7 +99,7 @@ abstract class BPlusNode {
      *
      *                          inner
      *                          +--+--+--+--+
-     *                          | 3|10|20|  |
+z`
      *                          +--+--+--+--+
      *                         /   |  |   \
      *                 _______/    |  |    \_________
@@ -129,7 +129,7 @@ abstract class BPlusNode {
      * DO NOT redistribute entries in any other way besides what we have
      * described. For example, do not move entries between nodes to avoid
      * splitting.
-     *
+     *`
      * Our B+ trees do not support duplicate entries with the same key. If a
      * duplicate key is inserted into a leaf node, the tree is left unchanged
      * and a BPlusTreeException is raised.
