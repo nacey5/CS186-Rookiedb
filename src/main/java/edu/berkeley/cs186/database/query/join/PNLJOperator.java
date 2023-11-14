@@ -19,6 +19,7 @@ public class PNLJOperator extends BNLJOperator {
               rightColumnName,
               transaction);
 
+
         joinType = JoinType.PNLJ;
         numBuffers = 3;
     }

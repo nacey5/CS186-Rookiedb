@@ -87,7 +87,14 @@ public class SortOperator extends QueryOperator {
      */
     public Run sortRun(Iterator<Record> records) {
         // TODO(proj3_part1): implement
-        return null;
+        Run sortedRun = new Run(transaction, getSchema());
+        List<Record> list_records = new ArrayList<>();
+        while (records.hasNext()) {
+            list_records.add(records.next());
+        }
+        Collections.sort(list_records, new RecordComparator());
+        sortedRun.addAll(list_records);
+        return sortedRun;
     }
 
     /**
@@ -108,7 +115,59 @@ public class SortOperator extends QueryOperator {
     public Run mergeSortedRuns(List<Run> runs) {
         assert (runs.size() <= this.numBuffers - 1);
         // TODO(proj3_part1): implement
-        return null;
+        Run sortedRun = new Run(transaction, getSchema());
+        List<BacktrackingIterator<Record>> iters = new ArrayList<>();
+        for (Run run : runs) {
+            iters.add(run.iterator());
+        }
+        PriorityQueue<Pair<Record, Integer>> q = new PriorityQueue<>(new RecordPairComparator());
+        for (int i = 0; i < iters.size(); i++) {
+            if (iters.get(i).hasNext()) {
+                q.add(new Pair<>(iters.get(i).next(), i));
+            }
+        }
+        //我这里使用中文描述下，这里使用Pari来记录当前这个记录来自哪个迭代器，这样当数据被取出之后，迭代器可以从其中拿出数据，具体的例子如下：
+        /**
+         * 块 1： [2, 4, 6, 8]
+         * 块 2： [1, 3, 5, 7]
+         * 块 3： [0, 9, 10, 11]
+         *
+         * Priority Queue:
+         * (2 from block 1)
+         * (1 from block 2)
+         * (0 from block 3)
+         *
+         * 从队列中取出最小的元素，即 0，它来自块 3。
+         * 将 0 添加到输出块中。
+         * 从块 3 中读取下一个记录 9，并将其加入队列。
+         *
+         * 同理：
+         * Priority Queue:
+         * (2 from block 1)
+         * (1 from block 2)
+         * (9 from block 3)
+         *
+         * 再次取出最小的元素 1，它来自块 2。
+         * 将 1 添加到输出块中。
+         * 从块 2 中读取下一个记录 3，并将其加入队列。
+         *
+         * Priority Queue:
+         * (2 from block 1)
+         * (3 from block 2)
+         * (9 from block 3)
+         *
+         * 重复这个过程，直至所有块中的记录都被读取。最终，输出块就是有序的合并后的结果。
+         */
+        while (!q.isEmpty()) {
+            Pair<Record, Integer> p = q.poll();
+            Record r = p.getFirst();
+            int i = p.getSecond();
+            sortedRun.add(r);
+            if (iters.get(i).hasNext()) {
+                q.add(new Pair<>(iters.get(i).next(), i));
+            }
+        }
+        return sortedRun;
     }
 
     /**
@@ -133,7 +192,14 @@ public class SortOperator extends QueryOperator {
      */
     public List<Run> mergePass(List<Run> runs) {
         // TODO(proj3_part1): implement
-        return Collections.emptyList();
+        List<Run> mergedRuns = new ArrayList<>();
+        int len = runs.size();
+        int workSize = numBuffers - 1;
+        for (int i = 0; i + workSize <= len ; i += workSize) {
+            //考虑到了最后一次合并的情况，确保了最后一个合并的块数量可能少于 (numBuffers - 1)
+            mergedRuns.add(mergeSortedRuns(runs.subList(i, Math.min(len, i + workSize))));
+        }
+        return mergedRuns;
     }
 
     /**
@@ -149,7 +215,14 @@ public class SortOperator extends QueryOperator {
         Iterator<Record> sourceIterator = getSource().iterator();
 
         // TODO(proj3_part1): implement
-        return makeRun(); // TODO(proj3_part1): replace this!
+        List<Run> sortedRuns = new ArrayList<>();
+        while (sourceIterator.hasNext()) {
+            sortedRuns.add(sortRun(getBlockIterator(sourceIterator, getSchema(), numBuffers)));
+        }
+        while (sortedRuns.size() > 1) {
+            sortedRuns = mergePass(sortedRuns);
+        }
+        return sortedRuns.get(0);
     }
 
     /**

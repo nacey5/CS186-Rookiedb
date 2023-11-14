@@ -577,6 +577,19 @@ public class QueryPlan {
         QueryOperator minOp = new SequentialScanOperator(this.transaction, table);
 
         // TODO(proj3_part2): implement
+        int minCost = minOp.estimateIOCost();
+        int index = -1;
+        for (int i : getEligibleIndexColumns(table)) {
+            SelectPredicate sp = this.selectPredicates.get(i);
+            QueryOperator indexScan = new IndexScanOperator(this.transaction, table, sp.column, sp.operator, sp.value);
+            int cost = indexScan.estimateIOCost();
+            if (cost < minCost) {
+                minCost = cost;
+                minOp = indexScan;
+                index = i;
+            }
+        }
+        minOp = addEligibleSelections(minOp, index);
         return minOp;
     }
 
@@ -625,6 +638,37 @@ public class QueryPlan {
      *                 table access (scan) query operator.
      * @return a mapping of table names to a join QueryOperator. The number of
      * elements in each set of table names should be equal to the pass number.
+     *
+     * 这里所做的事情是遍历查询中的每个表集合，然后对于每个表集合，检查它能否与其他表通过联接条件结合，
+     * 以产生成本最低的联接方式。这种方法会迭代地构建联接树，尝试不同的组合，以找到最优的联接路径，以减少 I/O 代价。
+     *
+     * 假设我们有三张表 A、B 和 C，它们的联接条件为 A JOIN B ON A.id = B.id，B JOIN C ON B.id = C.id。
+     *
+     * 初始状态：
+     *
+     * A 只与自身形成表集合，代价为 0。
+     * 对于 A JOIN B，由于 B 只与自身形成表集合，联接代价也为 0。
+     * 对于 B JOIN C，同样因为 C 只与自身形成表集合，联接代价也为 0。
+     * 表组合和联接代价：
+     *
+     * 初始状态：A:0, B:0, C:0
+     * A JOIN B: AB:0, C:0
+     * B JOIN C: BC:0, A:0
+     * 根据联接条件，会根据不同情况尝试不同的表组合：
+     *
+     * Case 1： 在 AB 组合中查找 C 表。如果找到了，联接 A 和 C 表。
+     * Case 2： 在 BC 组合中查找 A 表。如果找到了，联接 B 和 A 表。
+     * 对于 Case 1，AB 已与 B 结合，尝试找 C 表：
+     *
+     * 尝试 A JOIN C（A 与 C 表联接），代价为 cost_1。
+     * 尝试 B JOIN C（B 与 C 表联接），代价为 cost_2。
+     * 对于 Case 2，BC 已与 B 结合，尝试找 A 表：
+     *
+     * 尝试 B JOIN A（B 与 A 表联接），代价为 cost_3。
+     * 尝试 C JOIN A（C 与 A 表联接），代价为 cost_4。
+     * 然后，在这两个 Case 下比较联接的代价。最终选择联接代价最小的方式，作为新的表组合。这个过程会不断迭代，尝试不同的联接方式，直到找到最佳的联接路径。
+     *
+     * 这个过程类似于动态规划中的状态转移，记录下每个表组合的最佳联接方式，以得到最佳的查询操作符。
      */
     public Map<Set<String>, QueryOperator> minCostJoins(
             Map<Set<String>, QueryOperator> prevMap,
@@ -646,6 +690,36 @@ public class QueryPlan {
         //      calculate the cheapest join with the new table (the one you
         //      fetched an operator for from pass1Map) and the previously joined
         //      tables. Then, update the result map if needed.
+        for (Set<String> prevSet : prevMap.keySet()) {
+            for (JoinPredicate jp : this.joinPredicates) {
+                Set<String> newSet = new HashSet<>(prevSet);
+                Set<String> tableSet = new HashSet<>();
+                QueryOperator joinQuery;
+                // Case 1:
+                if (prevSet.contains(jp.leftTable) && !prevSet.contains(jp.rightTable)) {
+                    tableSet.add(jp.rightTable);
+                    QueryOperator rightQuery = pass1Map.get(tableSet);
+                    joinQuery = minCostJoinType(prevMap.get(prevSet), rightQuery, jp.leftColumn, jp.rightColumn);
+                    newSet.add(jp.rightTable);
+                } else if (!prevSet.contains(jp.leftTable) && prevSet.contains(jp.rightTable)) {
+                    // Case 2:
+                    tableSet.add(jp.leftTable);
+                    QueryOperator leftQuery = pass1Map.get(tableSet);
+                    // only consider left-deep join
+                    joinQuery = minCostJoinType(prevMap.get(prevSet), leftQuery, jp.rightColumn, jp.leftColumn);
+                    newSet.add(jp.leftTable);
+                } else {
+                    // Case 3:
+                    continue;
+                }
+                if (result.containsKey(newSet)) {
+                    if (result.get(newSet).estimateIOCost() > joinQuery.estimateIOCost())
+                        result.put(newSet, joinQuery);
+                } else {
+                    result.put(newSet, joinQuery);
+                }
+            }
+        }
         return result;
     }
 
@@ -695,7 +769,29 @@ public class QueryPlan {
         // Set the final operator to the lowest cost operator from the last
         // pass, add group by, project, sort and limit operators, and return an
         // iterator over the final operator.
-        return this.executeNaive(); // TODO(proj3_part2): Replace this!
+        int passNums = this.tableNames.size();
+        // pass1
+        Map<Set<String>, QueryOperator> pass1Map = new HashMap<>();
+        for (String table : this.tableNames) {
+            Set<String> singeTableSet = new HashSet<>();
+            singeTableSet.add(table);
+            pass1Map.put(singeTableSet, minCostSingleAccess(table));
+        }
+
+        // pass2 -> pass n
+        Map<Set<String>, QueryOperator> prevMap = pass1Map;
+        for (int i = 2; i <= passNums; i++) {
+            prevMap = minCostJoins(prevMap, pass1Map);
+        }
+
+        // set final operator
+        this.finalOperator = minCostOperator(prevMap);
+
+        // add group by, project, sort and limit operators
+        addGroupBy();
+        addProject();
+        addLimit();
+        return this.finalOperator.iterator();
     }
 
     // EXECUTE NAIVE ///////////////////////////////////////////////////////////

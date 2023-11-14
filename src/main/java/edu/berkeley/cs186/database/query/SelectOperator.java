@@ -99,6 +99,7 @@ public class SelectOperator extends QueryOperator {
             }
             while (this.sourceIterator.hasNext()) {
                 Record r = this.sourceIterator.next();
+                //谓词提取
                 switch (SelectOperator.this.operator) {
                 case EQUALS:
                     if (r.getValue(SelectOperator.this.columnIndex).equals(value)) {
